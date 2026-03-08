@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Hook: pre_pipeline — runs before pipeline starts
+# Copy this to pre_pipeline.sh (remove .example) to activate
+
+# Example: Verify required tools are installed
+# command -v docker >/dev/null 2>&1 || { log_err "Docker is required"; exit 1; }
+# command -v go >/dev/null 2>&1 || { log_err "Go is required"; exit 1; }
+
+# Example: Start Docker infrastructure
+# docker compose -f deployments/docker-compose.yaml up -d postgres redis
+
+# Example: Run database migrations
+# make migrate-up
+
+log_debug "pre_pipeline hook executed"

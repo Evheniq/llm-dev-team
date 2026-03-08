@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Hook: post_pipeline — runs at pipeline exit (success or failure)
+# Copy this to post_pipeline.sh (remove .example) to activate
+
+# Example: Stop Docker infrastructure
+# docker compose -f deployments/docker-compose.yaml down
+
+# Example: Cleanup temp files
+# rm -f /tmp/pipeline_*
+
+log_debug "post_pipeline hook executed"

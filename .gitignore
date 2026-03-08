@@ -1,0 +1,10 @@
+.DS_Store
+.claude/
+
+# Real config (may contain project-specific paths)
+config.env
+
+# Run artifacts
+runs/*
+!runs/.gitkeep
+tasks/*/runs/

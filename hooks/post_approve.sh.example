@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Hook: post_approve — runs after code is approved by reviewer
+# Copy this to post_approve.sh (remove .example) to activate
+
+# Example: Send Slack notification
+# curl -X POST "$SLACK_WEBHOOK" -d "{\"text\":\"Pipeline approved: ${TASK_DIR}\"}"
+
+# Example: Update Jira ticket status
+# jira issue move "$TASK_ID" "In Review"
+
+# Example: Generate domain-specific configs
+# python3 "${PIPELINE_DIR}/tools/config-generator.py" --task "${TASK_DIR}/task.md"
+
+log_debug "post_approve hook executed"
