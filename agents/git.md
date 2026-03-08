@@ -8,7 +8,7 @@ You manage git branch operations for the pipeline.
 Create a working branch for the task.
 
 1. Read task metadata to determine: Task ID, feature name
-2. Build branch name: `{{BRANCH_PREFIX}}_<task_id>_<feature_name>`
+2. Build branch name: `{{BRANCH_PREFIX}}<task_id>-<feature_name>` (e.g. `feature/BT-1234-my-feature`)
 3. Stash any uncommitted changes
 4. Fetch origin
 5. If a `Base branch:` is specified, create the branch from that branch instead of origin/master.
@@ -31,7 +31,7 @@ Commit and push changes after approval.
 
 ```
 SUCCESS
-BRANCH=pipeline_HAP-625_image-search
+BRANCH=feature/BT-9260-clickhouse-openrtb-logging
 COMMIT_MSG=HAP-625: implement image similarity search
 COMMIT_HASH=abc1234
 ```

@@ -28,20 +28,15 @@ init_run_dir() {
     echo "---" >> "${RUN_DIR}/pipeline.log"
 }
 
-# Bump sequence counter and return formatted number
-bump_seq() {
-    SEQ=$((SEQ + 1))
-    printf "%02d" "$SEQ"
-}
-
-# Get next artifact path
-# Usage: next_artifact "plan" "md" → runs/.../01_plan.md
+# Get next artifact path (sets global NEXT_ARTIFACT)
+# IMPORTANT: Do NOT call via $(...) — SEQ must increment in the current shell.
+# Usage: next_artifact "plan" "md"  →  use $NEXT_ARTIFACT after call
+NEXT_ARTIFACT=""
 next_artifact() {
     local name="$1"
     local ext="${2:-md}"
-    local num
-    num=$(bump_seq)
-    echo "${RUN_DIR}/${num}_${name}.${ext}"
+    SEQ=$((SEQ + 1))
+    NEXT_ARTIFACT="${RUN_DIR}/$(printf "%02d" "$SEQ")_${name}.${ext}"
 }
 
 # Save content to artifact (without bumping seq — use when path already obtained)
@@ -138,14 +133,15 @@ parse_subtask_dependencies() {
         local deps=()
 
         # Pattern 1: "Залежність від BT-XXXX" (Ukrainian dependency notation)
+        # macOS grep doesn't support -P, use grep + sed instead
         while IFS= read -r match; do
-            deps+=("$match")
-        done < <(grep -oP 'Залежність від \K(BT-\d+)' "$task_file" 2>/dev/null || true)
+            [[ -n "$match" ]] && deps+=("$match")
+        done < <(grep -o 'Залежність від BT-[0-9]*' "$task_file" 2>/dev/null | sed 's/.*\(BT-[0-9]*\)/\1/' || true)
 
         # Pattern 2: "- requires: BT-XXXX" lines (under ## Dependencies or anywhere)
         while IFS= read -r match; do
-            deps+=("$match")
-        done < <(grep -oP '^\s*-\s*requires:\s*\K(BT-\d+)' "$task_file" 2>/dev/null || true)
+            [[ -n "$match" ]] && deps+=("$match")
+        done < <(grep -E '^\s*-\s*requires:' "$task_file" 2>/dev/null | grep -oE 'BT-[0-9]+' || true)
 
         # Deduplicate
         local unique_deps
@@ -177,7 +173,7 @@ resolve_subtask_order() {
     local -A name_to_id  # full dir name → BT-1234
     for name in "${all_subtasks[@]}"; do
         local task_id
-        task_id=$(echo "$name" | grep -oP 'BT-\d+' | head -1 || echo "")
+        task_id=$(echo "$name" | grep -oE 'BT-[0-9]+' | head -1 || echo "")
         if [[ -n "$task_id" ]]; then
             id_to_name["$task_id"]="$name"
             name_to_id["$name"]="$task_id"
@@ -443,7 +439,7 @@ save_run_summary() {
         fi
 
         # Timing
-        if [[ ${#STEP_DURATIONS[@]} -gt 0 ]]; then
+        if [[ "${#STEP_DURATIONS[@]:-0}" -gt 0 ]] 2>/dev/null; then
             echo "## Timing"
             echo ""
             for step in "${!STEP_DURATIONS[@]}"; do

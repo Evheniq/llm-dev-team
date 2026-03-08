@@ -49,17 +49,20 @@ run_agent() {
 
         log_debug "Agent call: claude -p '...' --model ${model} --allowedTools '${tools}'"
 
-        # Run claude and capture output
-        if claude -p "$prompt" \
+        # Run claude and capture output (unset CLAUDECODE to allow nested sessions)
+        # stderr goes to temp file; only kept on failure
+        local stderr_tmp="${agent_log}.tmp"
+        if env -u CLAUDECODE claude -p "$prompt" \
             --model "$model" \
             --allowedTools "$tools" \
             > "$output_file" \
-            2>> "$agent_log"; then
+            2> "$stderr_tmp"; then
 
             # Verify output is non-empty
             if check_artifact "$output_file"; then
                 local size
                 size=$(wc -c < "$output_file" | tr -d ' ')
+                rm -f "$stderr_tmp"
                 stop_timer "$step_name"
                 log_ok "${step_name} completed (${size} bytes)"
                 return 0
@@ -69,6 +72,11 @@ run_agent() {
         else
             log_warn "${step_name}: agent exited with error (attempt ${attempt})"
         fi
+        # Append stderr to log only on failure/retry
+        if [[ -s "$stderr_tmp" ]]; then
+            cat "$stderr_tmp" >> "$agent_log"
+        fi
+        rm -f "$stderr_tmp"
     done
 
     stop_timer "$step_name"

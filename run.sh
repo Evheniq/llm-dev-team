@@ -54,8 +54,11 @@ finalize() {
             save_run_summary "$PIPELINE_STATUS" "$total_duration"
             print_timing_summary
         else
-            # Staircase mode: summary was already saved per-subtask + parent summary
-            log_info "Staircase pipeline completed in ${total_duration}s"
+            # Staircase mode: save top-level metrics to parent RUN_DIR
+            save_metrics "$PIPELINE_STATUS" "$total_duration"
+            local mins=$((total_duration / 60))
+            local secs=$((total_duration % 60))
+            log_info "Staircase pipeline completed in ${mins}m ${secs}s"
         fi
     fi
 
@@ -93,9 +96,9 @@ reset_pipeline_state() {
     PROGRESS_DETAIL=()
     PROGRESS_TIME=()
 
-    # Reset step timers
-    STEP_TIMERS=()
-    STEP_DURATIONS=()
+    # Reset step timers (must re-declare as associative arrays)
+    declare -gA STEP_TIMERS=()
+    declare -gA STEP_DURATIONS=()
 }
 
 # =============================================================================
@@ -108,8 +111,8 @@ stage_collect_context() {
     local task_context
     task_context=$(collect_task_context "$TASK_DIR")
 
-    local output_file
-    output_file=$(next_artifact "task_context")
+    next_artifact "task_context"
+    local output_file="$NEXT_ARTIFACT"
     save_artifact "$output_file" "$task_context"
 
     TASK_CONTEXT="$task_context"
@@ -120,8 +123,8 @@ stage_collect_context() {
 stage_plan() {
     progress_start "Planner"
     local feedback="${1:-}"
-    local output_file
-    output_file=$(next_artifact "planner_output")
+    next_artifact "planner_output"
+    local output_file="$NEXT_ARTIFACT"
 
     local context_sections=("task:${TASK_CONTEXT}")
     if [[ -n "$feedback" ]]; then
@@ -150,8 +153,8 @@ stage_plan() {
 stage_code() {
     progress_start "Coder + Build"
     local plan="${1:-$PLAN_OUTPUT}"
-    local output_file
-    output_file=$(next_artifact "coder_output")
+    next_artifact "coder_output"
+    local output_file="$NEXT_ARTIFACT"
 
     local prompt
     prompt=$(build_prompt "coder" \
@@ -186,13 +189,16 @@ stage_code() {
 
 # Prepare output file paths for parallel stages (reserve sequence numbers upfront)
 _prepare_parallel_files() {
-    TEST_FILE=$(next_artifact "test_report")
+    next_artifact "test_report"
+    TEST_FILE="$NEXT_ARTIFACT"
     if [[ "$E2E_ENABLED" == "true" ]]; then
-        E2E_FILE=$(next_artifact "tester_e2e")
+        next_artifact "tester_e2e"
+        E2E_FILE="$NEXT_ARTIFACT"
     else
         E2E_FILE=""
     fi
-    REVIEW_FILE=$(next_artifact "reviewer_output")
+    next_artifact "reviewer_output"
+    REVIEW_FILE="$NEXT_ARTIFACT"
 }
 
 # Run test agent (designed to run in background)
@@ -376,8 +382,8 @@ stage_qa() {
     fi
 
     progress_start "QA cases"
-    local output_file
-    output_file=$(next_artifact "tester_qa_cases")
+    next_artifact "tester_qa_cases"
+    local output_file="$NEXT_ARTIFACT"
 
     local prompt
     prompt=$(build_prompt "tester_qa" \
@@ -399,8 +405,8 @@ stage_report() {
     fi
 
     progress_start "Report"
-    local output_file
-    output_file=$(next_artifact "report")
+    next_artifact "report"
+    local output_file="$NEXT_ARTIFACT"
 
     local sections=("task:${TASK_CONTEXT}")
     [[ -n "${CODE_OUTPUT:-}" ]] && sections+=("changes:${CODE_OUTPUT}")
@@ -421,8 +427,8 @@ stage_report() {
 stage_fix() {
     progress_start "Fix"
     local combined_feedback="$1"
-    local output_file
-    output_file=$(next_artifact "fix")
+    next_artifact "fix"
+    local output_file="$NEXT_ARTIFACT"
 
     local prompt
     prompt=$(build_prompt "coder" \
@@ -462,8 +468,8 @@ stage_collect_subtask_context() {
     local task_context
     task_context=$(collect_subtask_context "$parent_dir" "$subtask_dir")
 
-    local output_file
-    output_file=$(next_artifact "task_context")
+    next_artifact "task_context"
+    local output_file="$NEXT_ARTIFACT"
     save_artifact "$output_file" "$task_context"
 
     TASK_CONTEXT="$task_context"
@@ -476,6 +482,7 @@ stage_collect_subtask_context() {
 
 run_staircase_pipeline() {
     local parent_dir="$TASK_DIR"
+    local parent_run_dir="$RUN_DIR"  # Save parent RUN_DIR (created by main)
     STAIRCASE_MODE=true
 
     header "Staircase Pipeline: $(basename "$parent_dir")"
@@ -488,7 +495,7 @@ run_staircase_pipeline() {
 
     log_info "Found ${#subtask_list[@]} subtask(s)"
 
-    # 2. Resolve execution order (topological sort)
+    # 2. Resolve execution order (topological sort by dependencies)
     local -a ordered_subtasks=()
     while IFS= read -r name; do
         [[ -n "$name" ]] && ordered_subtasks+=("$name")
@@ -500,15 +507,7 @@ run_staircase_pipeline() {
         return 1
     fi
 
-    # 3. Log execution plan
-    log_info "Execution order:"
-    local idx=0
-    for subtask in "${ordered_subtasks[@]}"; do
-        idx=$((idx + 1))
-        log_info "  ${idx}. ${subtask}"
-    done
-
-    # Determine starting base branch
+    # 3. Determine starting base branch
     local previous_branch="${BASE_BRANCH}"
     if [[ -z "$previous_branch" ]]; then
         # Auto-detect: prefer origin/dev, fallback to origin/main
@@ -522,14 +521,38 @@ run_staircase_pipeline() {
         log_info "Auto-detected base branch: ${previous_branch}"
     fi
 
-    # 4. Track results for summary
-    local -a staircase_results=()
+    # 4. Print execution plan with branch staircase visualization
+    echo ""
+    log_info "Execution plan:"
+    echo ""
+    echo -e "  ${CLR_CYAN}${previous_branch}${CLR_RESET}"
+    local idx=0
+    for subtask in "${ordered_subtasks[@]}"; do
+        idx=$((idx + 1))
+        local branch_preview="${BRANCH_PREFIX}$(echo "$subtask" | tr '[:upper:]' '[:lower:]')"
+        if (( idx == 1 )); then
+            echo -e "    ${CLR_GRAY}└─${CLR_RESET} ${CLR_BOLD}${idx}. ${subtask}${CLR_RESET} ${CLR_GRAY}→ branch: ${branch_preview} (MR → ${previous_branch})${CLR_RESET}"
+        else
+            echo -e "         ${CLR_GRAY}└─${CLR_RESET} ${CLR_BOLD}${idx}. ${subtask}${CLR_RESET} ${CLR_GRAY}→ branch: ${branch_preview} (MR → previous)${CLR_RESET}"
+        fi
+    done
+    echo ""
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Staircase plan printed — no agents will run"
+        PIPELINE_STATUS="dry_run"
+        return 0
+    fi
+
+    # 5. Track results for summary
+    local -a staircase_results=()   # "subtask:STATUS:detail:branch"
+    local -a staircase_branches=()  # ordered branch names for MR chain
     local staircase_ok=true
 
-    # 5. Execute each subtask sequentially
+    # 6. Execute each subtask sequentially
     for subtask in "${ordered_subtasks[@]}"; do
         echo ""
-        header "Subtask: ${subtask}"
+        header "Subtask: ${subtask} (branching from: ${previous_branch})"
 
         # a. Reset pipeline state for fresh run
         reset_pipeline_state
@@ -540,16 +563,17 @@ run_staircase_pipeline() {
         # c. Fresh run directory per subtask
         init_run_dir
 
-        # d. Collect subtask-specific context
+        # d. Collect subtask-specific context (parent task.md + docs + this subtask's task.md only)
         step_header "1" "Collect subtask context"
         stage_collect_subtask_context "$parent_dir" "$subtask"
 
-        # e. Git prepare (staircase branching)
+        # e. Git prepare: create branch FROM previous_branch
+        local current_branch=""
         if [[ "$AUTO_GIT" == "true" ]]; then
             step_header "2" "Git prepare (from ${previous_branch})"
             if ! run_git_prepare_staircase "$TASK_CONTEXT" "$previous_branch"; then
                 log_err "Git prepare failed for ${subtask}"
-                staircase_results+=("${subtask}:FAIL:git_prepare_failed")
+                staircase_results+=("${subtask}:FAIL:git_prepare_failed:")
                 if [[ "$STAIRCASE_ON_FAILURE" == "stop" ]]; then
                     staircase_ok=false
                     break
@@ -558,6 +582,7 @@ run_staircase_pipeline() {
                     continue
                 fi
             fi
+            current_branch="$LAST_BRANCH_NAME"
         fi
 
         # f. Run pipeline loop (replan or direct)
@@ -573,21 +598,26 @@ run_staircase_pipeline() {
         if [[ "$subtask_status" == "approved" ]]; then
             log_ok "Subtask ${subtask}: APPROVED"
 
-            # Force commit in staircase mode (implicit AUTO_COMMIT)
+            # Force commit + push in staircase mode (implicit AUTO_COMMIT)
             if [[ "$AUTO_GIT" == "true" ]]; then
-                step_header "+" "Git Commit (staircase)"
-                run_git_commit "$TASK_CONTEXT" "$CODE_OUTPUT"
-                # Update previous_branch for next subtask
-                if [[ -n "$LAST_BRANCH_NAME" ]]; then
-                    previous_branch="$LAST_BRANCH_NAME"
+                step_header "+" "Git Commit + Push (staircase)"
+                if run_git_commit "$TASK_CONTEXT" "$CODE_OUTPUT"; then
+                    log_ok "Changes committed and pushed to ${current_branch}"
+                else
+                    log_warn "Git commit had issues — staircase may be broken"
+                fi
+                # Update previous_branch: next subtask branches FROM this one
+                if [[ -n "$current_branch" ]]; then
+                    previous_branch="$current_branch"
+                    staircase_branches+=("$current_branch")
                     log_info "Next subtask will branch from: ${previous_branch}"
                 fi
             fi
 
-            staircase_results+=("${subtask}:APPROVED:${subtask_status}")
+            staircase_results+=("${subtask}:APPROVED:${subtask_status}:${current_branch}")
         else
             log_err "Subtask ${subtask}: FAILED (${subtask_status})"
-            staircase_results+=("${subtask}:FAIL:${subtask_status}")
+            staircase_results+=("${subtask}:FAIL:${subtask_status}:${current_branch}")
 
             if [[ "$STAIRCASE_ON_FAILURE" == "stop" ]]; then
                 staircase_ok=false
@@ -598,37 +628,77 @@ run_staircase_pipeline() {
         fi
     done
 
-    # 6. Restore parent TASK_DIR
+    # 7. Restore parent TASK_DIR and parent RUN_DIR
     TASK_DIR="$parent_dir"
+    RUN_DIR="$parent_run_dir"
 
-    # 7. Save staircase summary
-    local summary_file="${parent_dir}/STAIRCASE_SUMMARY.md"
+    # 8. Save staircase summary
+    local summary_file="${parent_run_dir}/STAIRCASE_SUMMARY.md"
     {
         echo "# Staircase Pipeline Summary"
         echo ""
         echo "**Parent task:** $(basename "$parent_dir")"
         echo "**Date:** $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "**Base branch:** ${BASE_BRANCH:-auto-detected}"
+        echo "**Base branch:** ${BASE_BRANCH:-auto-detected (${previous_branch})}"
         echo ""
-        echo "| # | Subtask | Status | Details |"
-        echo "|---|---------|--------|---------|"
+        echo "## Execution Results"
+        echo ""
+        echo "| # | Subtask | Status | Branch | Details |"
+        echo "|---|---------|--------|--------|---------|"
         local i=0
         for result in "${staircase_results[@]}"; do
             i=$((i + 1))
             local name="${result%%:*}"
             local rest="${result#*:}"
             local status="${rest%%:*}"
-            local detail="${rest#*:}"
-            echo "| ${i} | ${name} | ${status} | ${detail} |"
+            rest="${rest#*:}"
+            local detail="${rest%%:*}"
+            local branch="${rest#*:}"
+            echo "| ${i} | ${name} | ${status} | \`${branch}\` | ${detail} |"
         done
         echo ""
+
+        # Branch staircase visualization
+        if (( ${#staircase_branches[@]} > 0 )); then
+            echo "## Branch Staircase (MR chain)"
+            echo ""
+            echo '```'
+            local base="${BASE_BRANCH:-origin/dev}"
+            echo "${base}"
+            local prev="$base"
+            for branch in "${staircase_branches[@]}"; do
+                echo "  └─ ${branch}  (MR → ${prev})"
+                prev="$branch"
+            done
+            echo '```'
+            echo ""
+        fi
+
         if [[ "$staircase_ok" == "true" ]]; then
             echo "**Overall: ALL SUBTASKS APPROVED**"
         else
             echo "**Overall: PIPELINE STOPPED (failure encountered)**"
         fi
     } > "$summary_file"
-    log_info "Staircase summary saved: ${summary_file}"
+    log_ok "Staircase summary: ${summary_file}"
+
+    # Also save to parent task dir for easy access
+    cp "$summary_file" "${parent_dir}/STAIRCASE_SUMMARY.md" 2>/dev/null || true
+
+    # Print final branch staircase in terminal
+    if (( ${#staircase_branches[@]} > 0 )); then
+        echo ""
+        echo -e "${CLR_BOLD}${CLR_CYAN}── Branch Staircase (MR chain) ──${CLR_RESET}"
+        echo ""
+        local base="${BASE_BRANCH:-origin/dev}"
+        echo -e "  ${CLR_CYAN}${base}${CLR_RESET}"
+        local prev_display="$base"
+        for branch in "${staircase_branches[@]}"; do
+            echo -e "    ${CLR_GRAY}└─${CLR_RESET} ${CLR_GREEN}${branch}${CLR_RESET}  ${CLR_GRAY}(MR → ${prev_display})${CLR_RESET}"
+            prev_display="$branch"
+        done
+        echo ""
+    fi
 
     if [[ "$staircase_ok" == "true" ]]; then
         PIPELINE_STATUS="approved"
@@ -723,8 +793,8 @@ run_replan_loop() {
 
         # Build combined feedback from ALL failed validators
         # Include previous CODE_OUTPUT so planner knows what was already tried
-        local fb_file
-        fb_file=$(next_artifact "feedback")
+        next_artifact "feedback"
+        local fb_file="$NEXT_ARTIFACT"
         feedback="# Combined feedback from iteration ${CURRENT_ITERATION}\n\n"
         feedback+="Fix ALL issues below in the next iteration.\n\n"
         feedback+="## What was tried in iteration ${CURRENT_ITERATION}\n\n"
@@ -823,8 +893,8 @@ stage_retrospective() {
     fi
 
     progress_start "Retrospective"
-    local output_file
-    output_file=$(next_artifact "retrospective")
+    next_artifact "retrospective"
+    local output_file="$NEXT_ARTIFACT"
 
     # Collect all .md artifacts from the run directory into one context block
     local all_artifacts=""
@@ -1017,8 +1087,8 @@ run_post_approval() {
     step_header "+" "Retrospective"
     stage_retrospective
 
-    # Git commit (optional)
-    if [[ "$AUTO_GIT" == "true" && "$AUTO_COMMIT" == "true" ]]; then
+    # Git commit (optional) — SKIP in staircase mode (staircase handles its own commits)
+    if [[ "$STAIRCASE_MODE" != "true" && "$AUTO_GIT" == "true" && "$AUTO_COMMIT" == "true" ]]; then
         step_header "+" "Git Commit"
         run_git_commit "$TASK_CONTEXT" "$CODE_OUTPUT"
     fi
@@ -1029,8 +1099,8 @@ run_feature_pipeline() {
     header "Feature Pipeline"
 
     TASK_CONTEXT="$TASK_DESCRIPTION"
-    local ctx_file
-    ctx_file=$(next_artifact "task_context")
+    next_artifact "task_context"
+    local ctx_file="$NEXT_ARTIFACT"
     save_artifact "$ctx_file" "$TASK_CONTEXT"
 
     if [[ "$FEEDBACK_STRATEGY" == "replan" ]]; then
@@ -1108,8 +1178,8 @@ run_followup_pipeline() {
 
     # Override TASK_CONTEXT with enriched version
     TASK_CONTEXT=$(echo -e "$followup_context")
-    local ctx_file
-    ctx_file=$(next_artifact "followup_context")
+    next_artifact "followup_context"
+    local ctx_file="$NEXT_ARTIFACT"
     save_artifact "$ctx_file" "$TASK_CONTEXT"
     log_ok "Followup context built ($(echo "$PREV_RUNS_HISTORY" | grep -c '^## Run') previous runs)"
 
@@ -1146,9 +1216,10 @@ run_e2e_pipeline() {
 main() {
     PIPELINE_START_TIME=$(date +%s)
 
-    # Parse arguments and load config
+    # Parse arguments, load config, re-apply CLI args (so CLI overrides config.env)
     parse_args "$@"
     load_config
+    parse_args "$@"
     print_config
 
     # Initialize run directory

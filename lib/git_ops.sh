@@ -46,8 +46,8 @@ build_git_commit_prompt() {
 # Run git prepare stage
 run_git_prepare() {
     local task_context="$1"
-    local output_file
-    output_file=$(next_artifact "git_prepare")
+    next_artifact "git_prepare"
+    local output_file="$NEXT_ARTIFACT"
 
     local prompt
     prompt=$(build_git_prepare_prompt "$task_context")
@@ -72,8 +72,8 @@ run_git_prepare() {
 run_git_commit() {
     local task_context="$1"
     local changes="$2"
-    local output_file
-    output_file=$(next_artifact "git_commit")
+    next_artifact "git_commit"
+    local output_file="$NEXT_ARTIFACT"
 
     local prompt
     prompt=$(build_git_commit_prompt "$task_context" "$changes")
@@ -95,15 +95,15 @@ run_git_commit() {
 # Extract branch name from git agent output (parses BRANCH=xxx line)
 extract_branch_name() {
     local output_file="$1"
-    grep -oP 'BRANCH=\K\S+' "$output_file" 2>/dev/null | head -1
+    grep 'BRANCH=' "$output_file" 2>/dev/null | head -1 | sed 's/.*BRANCH=//;s/[[:space:]].*//'
 }
 
 # Run git prepare for staircase mode (with explicit base branch)
 run_git_prepare_staircase() {
     local task_context="$1"
     local base_branch="$2"
-    local output_file
-    output_file=$(next_artifact "git_prepare")
+    next_artifact "git_prepare"
+    local output_file="$NEXT_ARTIFACT"
 
     local prompt
     prompt=$(build_git_prepare_prompt "$task_context" "$base_branch")
