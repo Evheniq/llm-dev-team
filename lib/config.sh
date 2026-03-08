@@ -35,8 +35,11 @@ REPORT_ENABLED="${REPORT_ENABLED:-true}"
 REPORT_LANGUAGE="${REPORT_LANGUAGE:-ru}"
 RETRO_ENABLED="${RETRO_ENABLED:-true}"
 DRY_RUN="${DRY_RUN:-false}"
+BASE_BRANCH="${BASE_BRANCH:-}"
+STAIRCASE_ON_FAILURE="${STAIRCASE_ON_FAILURE:-stop}"
 
 # Pipeline state
+STAIRCASE_MODE=false
 PIPELINE_MODE=""
 TASK_DIR=""
 TASK_DESCRIPTION=""
@@ -142,6 +145,12 @@ parse_args() {
             --git)
                 AUTO_GIT=true
                 ;;
+            --base-branch)
+                BASE_BRANCH="$2"; shift
+                ;;
+            --on-failure)
+                STAIRCASE_ON_FAILURE="$2"; shift
+                ;;
             -h|--help)
                 usage
                 exit 0
@@ -205,6 +214,8 @@ Options:
   --no-report              Skip report generation
   --no-retro               Skip retrospective analysis
   --git / --no-git         Enable/disable git operations
+  --base-branch <branch>   Base branch for staircase mode (default: auto-detect)
+  --on-failure <action>    Staircase failure action: stop or skip (default: stop)
   -h, --help               Show this help
 
 Examples:
@@ -228,7 +239,8 @@ print_config() {
     log_debug "STRATEGY=$FEEDBACK_STRATEGY"
     log_debug "MAX_ITERATIONS=$MAX_ITERATIONS | MAX_FIX_ITERATIONS=$MAX_FIX_ITERATIONS"
     log_debug "E2E_ENABLED=$E2E_ENABLED | QA=$QA_ENABLED | REPORT=$REPORT_ENABLED | RETRO=$RETRO_ENABLED"
-    log_debug "GIT=$AUTO_GIT | DRY_RUN=$DRY_RUN"
+    log_debug "GIT=$AUTO_GIT | DRY_RUN=$DRY_RUN | STAIRCASE_ON_FAILURE=$STAIRCASE_ON_FAILURE"
+    log_debug "BASE_BRANCH=$BASE_BRANCH"
     log_debug "PROJECT_ROOT=$PROJECT_ROOT"
     log_debug "LANGUAGE=$LANGUAGE"
 }

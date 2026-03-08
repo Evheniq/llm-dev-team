@@ -104,6 +104,202 @@ collect_task_context() {
     echo -e "$context"
 }
 
+# =============================================================================
+# Subtask detection, dependency parsing, ordering (for staircase mode)
+# =============================================================================
+
+# Detect subtask directories containing task.md
+# Usage: detect_subtasks <task_dir>
+# Outputs: newline-separated list of subtask dir names
+detect_subtasks() {
+    local task_dir="$1"
+    local subtasks=()
+
+    for d in "${task_dir}"/*/; do
+        [[ -d "$d" && -f "${d}/task.md" ]] && subtasks+=("$(basename "$d")")
+    done
+
+    # Sort alphabetically for deterministic default order
+    printf '%s\n' "${subtasks[@]}" | sort
+}
+
+# Parse dependencies from a subtask's task.md
+# Looks for: "Залежність від BT-XXXX" and "- requires: BT-XXXX" under ## Dependencies
+# Usage: parse_subtask_dependencies <task_dir>
+# Outputs: lines of "subtask_name:dep1,dep2" (or "subtask_name:" if no deps)
+parse_subtask_dependencies() {
+    local task_dir="$1"
+
+    for d in "${task_dir}"/*/; do
+        [[ -d "$d" && -f "${d}/task.md" ]] || continue
+        local subtask_name
+        subtask_name=$(basename "$d")
+        local task_file="${d}/task.md"
+        local deps=()
+
+        # Pattern 1: "Залежність від BT-XXXX" (Ukrainian dependency notation)
+        while IFS= read -r match; do
+            deps+=("$match")
+        done < <(grep -oP 'Залежність від \K(BT-\d+)' "$task_file" 2>/dev/null || true)
+
+        # Pattern 2: "- requires: BT-XXXX" lines (under ## Dependencies or anywhere)
+        while IFS= read -r match; do
+            deps+=("$match")
+        done < <(grep -oP '^\s*-\s*requires:\s*\K(BT-\d+)' "$task_file" 2>/dev/null || true)
+
+        # Deduplicate
+        local unique_deps
+        unique_deps=$(printf '%s\n' "${deps[@]}" 2>/dev/null | sort -u | tr '\n' ',' | sed 's/,$//')
+
+        echo "${subtask_name}:${unique_deps}"
+    done
+}
+
+# Topological sort of subtasks based on dependencies (Kahn's algorithm)
+# Usage: resolve_subtask_order <task_dir>
+# Outputs: ordered subtask dir names (one per line)
+# Errors on cycles
+resolve_subtask_order() {
+    local task_dir="$1"
+
+    # Get all subtask names
+    local -a all_subtasks
+    while IFS= read -r name; do
+        [[ -n "$name" ]] && all_subtasks+=("$name")
+    done < <(detect_subtasks "$task_dir")
+
+    if (( ${#all_subtasks[@]} == 0 )); then
+        return 0
+    fi
+
+    # Build subtask ID → name mapping (extract BT-XXXX from dir name)
+    local -A id_to_name  # BT-1234 → full dir name
+    local -A name_to_id  # full dir name → BT-1234
+    for name in "${all_subtasks[@]}"; do
+        local task_id
+        task_id=$(echo "$name" | grep -oP 'BT-\d+' | head -1 || echo "")
+        if [[ -n "$task_id" ]]; then
+            id_to_name["$task_id"]="$name"
+            name_to_id["$name"]="$task_id"
+        fi
+    done
+
+    # Parse dependencies
+    local -A deps_map  # subtask_name → "dep1,dep2"
+    local -A in_degree # subtask_name → count
+    for name in "${all_subtasks[@]}"; do
+        deps_map["$name"]=""
+        in_degree["$name"]=0
+    done
+
+    while IFS= read -r line; do
+        local name="${line%%:*}"
+        local dep_str="${line#*:}"
+        [[ -z "$dep_str" ]] && continue
+
+        IFS=',' read -ra dep_ids <<< "$dep_str"
+        local resolved_deps=()
+        for dep_id in "${dep_ids[@]}"; do
+            [[ -z "$dep_id" ]] && continue
+            local dep_name="${id_to_name[$dep_id]:-}"
+            if [[ -n "$dep_name" ]]; then
+                resolved_deps+=("$dep_name")
+                in_degree["$name"]=$(( ${in_degree["$name"]} + 1 ))
+            fi
+        done
+        deps_map["$name"]=$(printf '%s,' "${resolved_deps[@]}" | sed 's/,$//')
+    done < <(parse_subtask_dependencies "$task_dir")
+
+    # Kahn's algorithm
+    local -a queue=()
+    local -a result=()
+
+    # Seed queue with zero in-degree nodes (sorted for determinism)
+    for name in "${all_subtasks[@]}"; do
+        if (( ${in_degree["$name"]} == 0 )); then
+            queue+=("$name")
+        fi
+    done
+
+    while (( ${#queue[@]} > 0 )); do
+        # Take first from queue
+        local current="${queue[0]}"
+        queue=("${queue[@]:1}")
+        result+=("$current")
+
+        # For each subtask that depends on current, reduce in-degree
+        for name in "${all_subtasks[@]}"; do
+            local dep_list="${deps_map[$name]}"
+            [[ -z "$dep_list" ]] && continue
+
+            IFS=',' read -ra dep_names <<< "$dep_list"
+            for dep_name in "${dep_names[@]}"; do
+                if [[ "$dep_name" == "$current" ]]; then
+                    in_degree["$name"]=$(( ${in_degree["$name"]} - 1 ))
+                    if (( ${in_degree["$name"]} == 0 )); then
+                        queue+=("$name")
+                    fi
+                fi
+            done
+        done
+    done
+
+    # Check for cycles
+    if (( ${#result[@]} != ${#all_subtasks[@]} )); then
+        log_err "Dependency cycle detected among subtasks!"
+        log_err "Resolved ${#result[@]} of ${#all_subtasks[@]} subtasks"
+        return 1
+    fi
+
+    printf '%s\n' "${result[@]}"
+}
+
+# Collect context for a single subtask in staircase mode
+# Includes parent task.md (as overview), parent docs/, and only this subtask's task.md
+# Usage: collect_subtask_context <parent_dir> <subtask_dir>
+# Outputs: combined markdown to stdout
+collect_subtask_context() {
+    local parent_dir="$1"
+    local subtask_dir="$2"
+    local context=""
+
+    # Parent task.md as overview/reference
+    if [[ -f "${parent_dir}/task.md" ]]; then
+        context+="# Parent Task (overview/reference)\n\n"
+        context+=$(cat "${parent_dir}/task.md")
+        context+="\n\n"
+    fi
+
+    # Parent docs/ directory (all .md files)
+    if [[ -d "${parent_dir}/docs" ]]; then
+        for doc in "${parent_dir}/docs"/*.md; do
+            [[ -f "$doc" ]] || continue
+            local doc_name
+            doc_name=$(basename "$doc")
+            context+="\n---\n\n# Documentation: ${doc_name}\n\n"
+            context+=$(cat "$doc")
+            context+="\n\n"
+        done
+    fi
+
+    # This subtask's task.md
+    local subtask_path="${parent_dir}/${subtask_dir}"
+    if [[ -f "${subtask_path}/task.md" ]]; then
+        context+="\n---\n\n# Current Subtask: ${subtask_dir}\n\n"
+        context+=$(cat "${subtask_path}/task.md")
+        context+="\n\n"
+    else
+        log_err "No task.md found in subtask: ${subtask_path}"
+        return 1
+    fi
+
+    echo -e "$context"
+}
+
+# =============================================================================
+# Run history
+# =============================================================================
+
 # Load history from ALL runs of a task
 # - Collects SUMMARY.md from every run into PREV_RUNS_HISTORY (chronological)
 # - Loads full artifacts from the LATEST run for detailed context

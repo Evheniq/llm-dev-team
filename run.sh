@@ -48,9 +48,15 @@ finalize() {
 
     # Save metrics and run summary
     if [[ -n "${RUN_DIR:-}" ]]; then
-        save_metrics "$PIPELINE_STATUS" "$total_duration"
-        save_run_summary "$PIPELINE_STATUS" "$total_duration"
-        print_timing_summary
+        if [[ "$STAIRCASE_MODE" != "true" ]]; then
+            # Single task: save metrics/summary to run dir
+            save_metrics "$PIPELINE_STATUS" "$total_duration"
+            save_run_summary "$PIPELINE_STATUS" "$total_duration"
+            print_timing_summary
+        else
+            # Staircase mode: summary was already saved per-subtask + parent summary
+            log_info "Staircase pipeline completed in ${total_duration}s"
+        fi
     fi
 
     # Run post hook
@@ -60,6 +66,36 @@ finalize() {
     print_status_banner "$PIPELINE_STATUS" "$total_duration"
 
     exit "${exit_code}"
+}
+
+# =============================================================================
+# State Reset (for staircase mode — fresh state per subtask)
+# =============================================================================
+
+reset_pipeline_state() {
+    SEQ=0
+    CURRENT_ITERATION=0
+    PIPELINE_STATUS="unknown"
+    PLAN_OUTPUT=""
+    CODE_OUTPUT=""
+    TEST_OUTPUT=""
+    REVIEW_OUTPUT=""
+    E2E_OUTPUT=""
+    VALIDATION_FEEDBACK=""
+    TEST_VERDICT=""
+    E2E_VERDICT=""
+    REVIEW_VERDICT=""
+    GIT_PREPARE_OUTPUT=""
+
+    # Reset progress tracker arrays
+    PROGRESS_STAGES=()
+    PROGRESS_STATUS=()
+    PROGRESS_DETAIL=()
+    PROGRESS_TIME=()
+
+    # Reset step timers
+    STEP_TIMERS=()
+    STEP_DURATIONS=()
 }
 
 # =============================================================================
@@ -417,8 +453,206 @@ stage_fix() {
 # Pipeline Modes
 # =============================================================================
 
+# Stage: Collect subtask context (for staircase mode)
+stage_collect_subtask_context() {
+    local parent_dir="$1"
+    local subtask_dir="$2"
+
+    progress_start "Collect subtask context"
+    local task_context
+    task_context=$(collect_subtask_context "$parent_dir" "$subtask_dir")
+
+    local output_file
+    output_file=$(next_artifact "task_context")
+    save_artifact "$output_file" "$task_context"
+
+    TASK_CONTEXT="$task_context"
+    progress_done "Collect subtask context" "${subtask_dir}"
+}
+
+# =============================================================================
+# Staircase Pipeline (parent tasks with subtasks)
+# =============================================================================
+
+run_staircase_pipeline() {
+    local parent_dir="$TASK_DIR"
+    STAIRCASE_MODE=true
+
+    header "Staircase Pipeline: $(basename "$parent_dir")"
+
+    # 1. Detect subtasks
+    local -a subtask_list=()
+    while IFS= read -r name; do
+        [[ -n "$name" ]] && subtask_list+=("$name")
+    done < <(detect_subtasks "$parent_dir")
+
+    log_info "Found ${#subtask_list[@]} subtask(s)"
+
+    # 2. Resolve execution order (topological sort)
+    local -a ordered_subtasks=()
+    while IFS= read -r name; do
+        [[ -n "$name" ]] && ordered_subtasks+=("$name")
+    done < <(resolve_subtask_order "$parent_dir")
+
+    if (( ${#ordered_subtasks[@]} == 0 )); then
+        log_err "No subtasks resolved — aborting"
+        PIPELINE_STATUS="staircase_failed"
+        return 1
+    fi
+
+    # 3. Log execution plan
+    log_info "Execution order:"
+    local idx=0
+    for subtask in "${ordered_subtasks[@]}"; do
+        idx=$((idx + 1))
+        log_info "  ${idx}. ${subtask}"
+    done
+
+    # Determine starting base branch
+    local previous_branch="${BASE_BRANCH}"
+    if [[ -z "$previous_branch" ]]; then
+        # Auto-detect: prefer origin/dev, fallback to origin/main
+        if git rev-parse --verify origin/dev &>/dev/null; then
+            previous_branch="origin/dev"
+        elif git rev-parse --verify origin/main &>/dev/null; then
+            previous_branch="origin/main"
+        else
+            previous_branch="origin/master"
+        fi
+        log_info "Auto-detected base branch: ${previous_branch}"
+    fi
+
+    # 4. Track results for summary
+    local -a staircase_results=()
+    local staircase_ok=true
+
+    # 5. Execute each subtask sequentially
+    for subtask in "${ordered_subtasks[@]}"; do
+        echo ""
+        header "Subtask: ${subtask}"
+
+        # a. Reset pipeline state for fresh run
+        reset_pipeline_state
+
+        # b. Set TASK_DIR to subtask dir (for artifact paths etc.)
+        TASK_DIR="${parent_dir}/${subtask}"
+
+        # c. Fresh run directory per subtask
+        init_run_dir
+
+        # d. Collect subtask-specific context
+        step_header "1" "Collect subtask context"
+        stage_collect_subtask_context "$parent_dir" "$subtask"
+
+        # e. Git prepare (staircase branching)
+        if [[ "$AUTO_GIT" == "true" ]]; then
+            step_header "2" "Git prepare (from ${previous_branch})"
+            if ! run_git_prepare_staircase "$TASK_CONTEXT" "$previous_branch"; then
+                log_err "Git prepare failed for ${subtask}"
+                staircase_results+=("${subtask}:FAIL:git_prepare_failed")
+                if [[ "$STAIRCASE_ON_FAILURE" == "stop" ]]; then
+                    staircase_ok=false
+                    break
+                else
+                    log_warn "Skipping ${subtask} (--on-failure=skip)"
+                    continue
+                fi
+            fi
+        fi
+
+        # f. Run pipeline loop (replan or direct)
+        local feedback=""
+        if [[ "$FEEDBACK_STRATEGY" == "replan" ]]; then
+            run_replan_loop "$feedback"
+        else
+            run_direct_loop "$feedback"
+        fi
+        local subtask_status="$PIPELINE_STATUS"
+
+        # g. Handle result
+        if [[ "$subtask_status" == "approved" ]]; then
+            log_ok "Subtask ${subtask}: APPROVED"
+
+            # Force commit in staircase mode (implicit AUTO_COMMIT)
+            if [[ "$AUTO_GIT" == "true" ]]; then
+                step_header "+" "Git Commit (staircase)"
+                run_git_commit "$TASK_CONTEXT" "$CODE_OUTPUT"
+                # Update previous_branch for next subtask
+                if [[ -n "$LAST_BRANCH_NAME" ]]; then
+                    previous_branch="$LAST_BRANCH_NAME"
+                    log_info "Next subtask will branch from: ${previous_branch}"
+                fi
+            fi
+
+            staircase_results+=("${subtask}:APPROVED:${subtask_status}")
+        else
+            log_err "Subtask ${subtask}: FAILED (${subtask_status})"
+            staircase_results+=("${subtask}:FAIL:${subtask_status}")
+
+            if [[ "$STAIRCASE_ON_FAILURE" == "stop" ]]; then
+                staircase_ok=false
+                break
+            else
+                log_warn "Continuing to next subtask (--on-failure=skip)"
+            fi
+        fi
+    done
+
+    # 6. Restore parent TASK_DIR
+    TASK_DIR="$parent_dir"
+
+    # 7. Save staircase summary
+    local summary_file="${parent_dir}/STAIRCASE_SUMMARY.md"
+    {
+        echo "# Staircase Pipeline Summary"
+        echo ""
+        echo "**Parent task:** $(basename "$parent_dir")"
+        echo "**Date:** $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "**Base branch:** ${BASE_BRANCH:-auto-detected}"
+        echo ""
+        echo "| # | Subtask | Status | Details |"
+        echo "|---|---------|--------|---------|"
+        local i=0
+        for result in "${staircase_results[@]}"; do
+            i=$((i + 1))
+            local name="${result%%:*}"
+            local rest="${result#*:}"
+            local status="${rest%%:*}"
+            local detail="${rest#*:}"
+            echo "| ${i} | ${name} | ${status} | ${detail} |"
+        done
+        echo ""
+        if [[ "$staircase_ok" == "true" ]]; then
+            echo "**Overall: ALL SUBTASKS APPROVED**"
+        else
+            echo "**Overall: PIPELINE STOPPED (failure encountered)**"
+        fi
+    } > "$summary_file"
+    log_info "Staircase summary saved: ${summary_file}"
+
+    if [[ "$staircase_ok" == "true" ]]; then
+        PIPELINE_STATUS="approved"
+        return 0
+    else
+        PIPELINE_STATUS="staircase_failed"
+        return 1
+    fi
+}
+
 # Full task pipeline: collect → [git] → plan → code → test → [e2e] → review → [qa] → [report]
 run_task_pipeline() {
+    # Detect parent task with subtasks → staircase mode
+    local subtask_count=0
+    for d in "${TASK_DIR}"/*/; do
+        [[ -f "${d}/task.md" ]] && subtask_count=$((subtask_count + 1))
+    done
+
+    if (( subtask_count > 0 )); then
+        log_info "Parent task with ${subtask_count} subtask(s) → staircase mode"
+        run_staircase_pipeline
+        return $?
+    fi
+
     header "Task Pipeline: $(basename "$TASK_DIR")"
 
     # 1. Collect task context

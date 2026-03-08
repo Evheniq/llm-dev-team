@@ -8,3 +8,4 @@ config.env
 runs/*
 !runs/.gitkeep
 tasks/*/runs/
+tasks/BT-*

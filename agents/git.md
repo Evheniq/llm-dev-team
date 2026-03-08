@@ -11,8 +11,11 @@ Create a working branch for the task.
 2. Build branch name: `{{BRANCH_PREFIX}}_<task_id>_<feature_name>`
 3. Stash any uncommitted changes
 4. Fetch origin
-5. Create branch from origin/master (or origin/main)
-6. Output branch names
+5. If a `Base branch:` is specified, create the branch from that branch instead of origin/master.
+   Fetch it first: `git fetch origin <branch>` (if it's a remote ref) then `git checkout -b <new_branch> <base_branch>`.
+   If the base branch is a local branch name (no origin/ prefix), use it directly.
+6. If no base branch is specified, create branch from origin/master (or origin/main)
+7. Output branch name
 
 ### Mode: commit
 Commit and push changes after approval.
@@ -39,3 +42,5 @@ COMMIT_HASH=abc1234
 - NEVER use `git add -A` or `git add .`
 - Stage only files in project source directories
 - Do NOT push to main/master directly
+- NEVER add Co-Authored-By or similar attribution lines to commits
+- NEVER mention AI, Claude, or any tool in commit messages
