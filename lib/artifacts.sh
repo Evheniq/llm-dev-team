@@ -61,6 +61,13 @@ check_artifact() {
     return 1
 }
 
+# Find the latest artifact matching a name pattern in the current run dir
+# Usage: latest_artifact "planner_output" → path to the most recent matching file
+latest_artifact() {
+    local name_pattern="$1"
+    ls -1 "${RUN_DIR}"/*"${name_pattern}"*.md 2>/dev/null | tail -1
+}
+
 # Collect task context from task.md + subtask files
 # Outputs combined markdown to stdout
 collect_task_context() {
@@ -147,6 +154,7 @@ load_previous_runs() {
 
     PREV_CODE_OUTPUT=""
     PREV_REVIEW_OUTPUT=""
+    PREV_TEST_OUTPUT=""
 
     # Last coder output or fix (the most recent state of the code)
     for f in "${latest_run}"/*coder_output* "${latest_run}"/*fix*; do
@@ -155,11 +163,16 @@ load_previous_runs() {
     for f in "${latest_run}"/*reviewer_output*; do
         [[ -f "$f" ]] && PREV_REVIEW_OUTPUT=$(cat "$f") && break
     done
+    # Last test report (to show what failed)
+    for f in "${latest_run}"/*test_report*; do
+        [[ -f "$f" ]] && PREV_TEST_OUTPUT=$(cat "$f") && break
+    done
 
     local loaded=0
     [[ -n "$PREV_RUNS_HISTORY" ]] && loaded=$((loaded + 1))
     [[ -n "$PREV_CODE_OUTPUT" ]] && loaded=$((loaded + 1))
     [[ -n "$PREV_REVIEW_OUTPUT" ]] && loaded=$((loaded + 1))
+    [[ -n "$PREV_TEST_OUTPUT" ]] && loaded=$((loaded + 1))
     log_ok "Loaded context: ${run_count} summaries + latest run details"
 }
 

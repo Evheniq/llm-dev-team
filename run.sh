@@ -269,12 +269,12 @@ stage_validate_parallel() {
     fi
 
     # E2E results
-    E2E_VERDICT="E2E_PASSED"
+    E2E_VERDICT="ALL_PASS"
     if [[ -n "$E2E_FILE" ]]; then
         if [[ -f "$E2E_FILE" && -s "$E2E_FILE" ]]; then
             E2E_OUTPUT=$(cat "$E2E_FILE")
             E2E_VERDICT=$(extract_verdict "$E2E_FILE")
-            if [[ "$E2E_VERDICT" != "E2E_PASSED" ]]; then
+            if ! is_passing_verdict "$E2E_VERDICT"; then
                 log_warn "E2E: ${E2E_VERDICT}"
                 progress_fail "E2E tests" "$E2E_VERDICT"
                 VALIDATION_FEEDBACK+="## E2E Test Failures\n\n${E2E_OUTPUT}\n\n---\n\n"
@@ -325,7 +325,7 @@ stage_validate_parallel() {
     else
         local issue_count=0
         is_passing_verdict "$TEST_VERDICT" || issue_count=$((issue_count + 1))
-        [[ "$E2E_VERDICT" == "E2E_PASSED" ]] || issue_count=$((issue_count + 1))
+        is_passing_verdict "$E2E_VERDICT" || issue_count=$((issue_count + 1))
         is_passing_verdict "$REVIEW_VERDICT" || issue_count=$((issue_count + 1))
         log_warn "Validation found issues from ${issue_count} source(s)"
         return 1
@@ -456,6 +456,15 @@ run_replan_loop() {
         step_header "${CURRENT_ITERATION}.1" "Planning"
         stage_plan "$feedback" || { PIPELINE_STATUS="plan_failed"; return 1; }
 
+        # Check if planner needs clarification
+        local plan_verdict
+        plan_verdict=$(extract_verdict "$(latest_artifact "planner_output")")
+        if [[ "$plan_verdict" == "NEEDS_CLARIFICATION" ]]; then
+            log_warn "Planner needs clarification — see planner output"
+            PIPELINE_STATUS="needs_clarification"
+            return 1
+        fi
+
         # Code (coder self-verifies build)
         step_header "${CURRENT_ITERATION}.2" "Coding + Build"
         stage_code || { PIPELINE_STATUS="code_failed"; return 1; }
@@ -479,13 +488,18 @@ run_replan_loop() {
         fi
 
         # Build combined feedback from ALL failed validators
+        # Include previous CODE_OUTPUT so planner knows what was already tried
         local fb_file
         fb_file=$(next_artifact "feedback")
         feedback="# Combined feedback from iteration ${CURRENT_ITERATION}\n\n"
         feedback+="Fix ALL issues below in the next iteration.\n\n"
+        feedback+="## What was tried in iteration ${CURRENT_ITERATION}\n\n"
+        feedback+="The coder produced the following changes (summary):\n\n"
+        feedback+="${CODE_OUTPUT}\n\n"
+        feedback+="## Validation results\n\n"
         feedback+="${VALIDATION_FEEDBACK}"
         save_artifact "$fb_file" "$(echo -e "$feedback")"
-        log_warn "Combined feedback sent to planner for next iteration"
+        log_warn "Combined feedback (with previous code context) sent to planner for next iteration"
     done
 
     log_err "Max iterations (${MAX_ITERATIONS}) reached"
@@ -501,6 +515,15 @@ run_direct_loop() {
     # Plan (once)
     step_header "1" "Planning"
     stage_plan "$feedback" || { PIPELINE_STATUS="plan_failed"; return 1; }
+
+    # Check if planner needs clarification
+    local plan_verdict
+    plan_verdict=$(extract_verdict "$(latest_artifact "planner_output")")
+    if [[ "$plan_verdict" == "NEEDS_CLARIFICATION" ]]; then
+        log_warn "Planner needs clarification — see planner output"
+        PIPELINE_STATUS="needs_clarification"
+        return 1
+    fi
 
     # Code (coder self-verifies build)
     step_header "2" "Coding + Build"
@@ -839,9 +862,15 @@ run_followup_pipeline() {
         followup_context+="---\n\n# Latest Review\n\n${PREV_REVIEW_OUTPUT}\n\n"
     fi
 
+    # Include test/validation feedback from latest run if available
+    if [[ -n "${PREV_TEST_OUTPUT:-}" ]]; then
+        followup_context+="---\n\n# Latest Test Results\n\n${PREV_TEST_OUTPUT}\n\n"
+    fi
+
     followup_context+="---\n\n# New Instruction\n\n${FOLLOWUP_PROMPT}\n\n"
     followup_context+="Focus ONLY on the new instruction above. The previous changes are already in the codebase.\n"
-    followup_context+="Use the run history above to understand what was already tried and what worked/failed."
+    followup_context+="Use the run history above to understand what was already tried and what worked/failed.\n"
+    followup_context+="Do NOT repeat approaches that already failed — adapt based on the feedback."
 
     # Override TASK_CONTEXT with enriched version
     TASK_CONTEXT=$(echo -e "$followup_context")
@@ -867,7 +896,7 @@ run_e2e_pipeline() {
     CODE_OUTPUT="(existing code, E2E re-verification)"
     stage_e2e
 
-    if [[ "$E2E_VERDICT" == "E2E_PASSED" ]]; then
+    if is_passing_verdict "$E2E_VERDICT"; then
         PIPELINE_STATUS="e2e_passed"
         log_ok "E2E tests passed"
     else

@@ -15,11 +15,13 @@ Test the implemented functionality end-to-end using HTTP requests (curl).
 
 ## Output Format
 
-**CRITICAL: The LAST line of your output MUST be exactly:**
-- `E2E PASSED` — all tests passed
-- `E2E FAILED` — one or more tests failed
+**CRITICAL: The FIRST line of your output MUST be one of:**
+- `ALL_PASS` — all E2E tests passed
+- `TESTS_FAIL` — one or more E2E tests failed
 
 ```markdown
+ALL_PASS
+
 ## E2E Test Results
 
 | # | Test Case | Method | Endpoint | Status | Expected | Actual | Result |
@@ -29,8 +31,6 @@ Test the implemented functionality end-to-end using HTTP requests (curl).
 
 ## Details
 [curl commands and full responses for failed tests]
-
-E2E PASSED
 ```
 
 ## Rules

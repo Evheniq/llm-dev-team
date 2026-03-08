@@ -3,13 +3,14 @@
 # feedback.sh — Verdict parsing, feedback construction, routing
 # =============================================================================
 
-# Extract verdict from first line of agent output
+# Extract verdict from first non-empty line of agent output
 # Returns: APPROVE, REQUEST_CHANGES, REJECT, BUILD_OK, BUILD_FAIL,
-#          ALL_PASS, TESTS_FAIL, E2E_PASSED, E2E_FAILED, or UNKNOWN
+#          ALL_PASS, TESTS_FAIL, NEEDS_CLARIFICATION, or UNKNOWN
 extract_verdict() {
     local file="$1"
     local first_line
-    first_line=$(head -1 "$file" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+    # Skip empty lines and whitespace-only lines to find the actual verdict
+    first_line=$(grep -m1 -v '^[[:space:]]*$' "$file" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
 
     case "$first_line" in
         *APPROVE*)        echo "APPROVE" ;;
@@ -19,8 +20,7 @@ extract_verdict() {
         *BUILD_FAIL*|*BUILDFAIL*) echo "BUILD_FAIL" ;;
         *ALL_PASS*|*ALLPASS*) echo "ALL_PASS" ;;
         *TESTS_FAIL*|*TESTSFAIL*) echo "TESTS_FAIL" ;;
-        *E2E_PASSED*|*E2EPASSED*|*PASSED*) echo "E2E_PASSED" ;;
-        *E2E_FAILED*|*E2EFAILED*|*FAILED*) echo "E2E_FAILED" ;;
+        *NEEDS_CLARIFICATION*|*NEEDSCLARIFICATION*) echo "NEEDS_CLARIFICATION" ;;
         *IMPROVEMENTS_FOUND*|*IMPROVEMENTSFOUND*) echo "IMPROVEMENTS_FOUND" ;;
         *ONE_OFF*|*ONEOFF*) echo "ONE_OFF" ;;
         *SUCCESS*)        echo "SUCCESS" ;;
@@ -49,7 +49,7 @@ build_feedback() {
 is_passing_verdict() {
     local verdict="$1"
     case "$verdict" in
-        APPROVE|ALL_PASS|E2E_PASSED|SUCCESS|BUILD_OK) return 0 ;;
+        APPROVE|ALL_PASS|SUCCESS|BUILD_OK) return 0 ;;
         *) return 1 ;;
     esac
 }
