@@ -201,6 +201,25 @@ _write_status_file() {
         if [[ -n "$running" ]]; then
             echo "> **Now running:** ${running%, }"
         fi
+
+        # Agent context usage
+        if [[ ${#AGENT_CONTEXT_STATS[@]} -gt 0 ]]; then
+            echo ""
+            echo "## Context Usage"
+            echo ""
+            echo "| Agent | Prompt | Output | Total | % of 200K |"
+            echo "|-------|--------|--------|-------|-----------|"
+            for stat in "${AGENT_CONTEXT_STATS[@]}"; do
+                local name="${stat%%:*}"
+                local rest="${stat#*:}"
+                local ptok="${rest%%:*}"
+                rest="${rest#*:}"
+                local otok="${rest%%:*}"
+                local ttok="${rest#*:}"
+                local pct=$(( ttok * 100 / 200000 ))
+                echo "| ${name} | ~${ptok} | ~${otok} | ~${ttok} | ${pct}% |"
+            done
+        fi
     } > "$status_file"
 }
 

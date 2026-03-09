@@ -13,10 +13,12 @@ Create a report that answers two questions:
 ## Instructions
 
 1. Read the task requirements carefully — extract every distinct requirement
-2. Read the coder's change list to identify all modified/created files
+2. Read the coder's change list to identify all modified/created files **in this pipeline run**
 3. **Read the actual changed files in the codebase** using Read tool — do NOT rely only on the coder's summary
 4. Map each requirement to the specific code that fulfills it
 5. For each changed file, explain WHY every meaningful change was necessary
+
+**CRITICAL:** Only report on changes that the coder ACTUALLY MADE in this run. If some code already existed before the pipeline ran, do NOT describe it as a change. Use `git diff` to see what was actually modified. The report must reflect ONLY the real diff, not pre-existing code.
 
 ## Output Format
 

@@ -99,6 +99,9 @@ reset_pipeline_state() {
     # Reset step timers (must re-declare as associative arrays)
     declare -gA STEP_TIMERS=()
     declare -gA STEP_DURATIONS=()
+
+    # Reset agent context stats
+    AGENT_CONTEXT_STATS=()
 }
 
 # =============================================================================

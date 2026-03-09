@@ -3,6 +3,9 @@
 # agent.sh — Claude agent runner with retry logic and tool permissions
 # =============================================================================
 
+# Agent context usage tracking: "step_name:prompt_tokens:output_tokens"
+declare -a AGENT_CONTEXT_STATS=()
+
 # Tool permission sets for each agent role
 declare -A AGENT_TOOLS
 AGENT_TOOLS[planner]="Read,Glob,Grep,Bash"
@@ -64,7 +67,13 @@ run_agent() {
                 size=$(wc -c < "$output_file" | tr -d ' ')
                 rm -f "$stderr_tmp"
                 stop_timer "$step_name"
-                log_ok "${step_name} completed (${size} bytes)"
+                # Track approximate context usage (1 token ≈ 3.5 bytes for mixed lang)
+                local prompt_bytes=${#prompt}
+                local prompt_tokens=$(( prompt_bytes * 10 / 35 ))
+                local output_tokens=$(( size * 10 / 35 ))
+                local total_tokens=$(( prompt_tokens + output_tokens ))
+                AGENT_CONTEXT_STATS+=("${step_name}:${prompt_tokens}:${output_tokens}:${total_tokens}")
+                log_ok "${step_name} completed (${size} bytes, ~${total_tokens} tokens)"
                 return 0
             else
                 log_warn "${step_name}: output file empty, retrying..."
