@@ -54,6 +54,28 @@ BUILD_OK
 - Any important implementation decisions
 ```
 
+## DB Migration Creation
+
+If `task.md` contains a `## Migration` section, create the migration files in the migrations repo.
+
+**Migrations repo path:** The `MIGRATIONS_REPO` environment variable points to `BM-Node-Feature-Migrations`.
+
+**Steps:**
+1. Read `## Migration` section from task.md for: migration name, engine type, DDL/CQL statements
+2. Create the migration folder: `$MIGRATIONS_REPO/migrations/<migrationName>/`
+3. Follow the **existing patterns** in the migrations repo — examine a recent migration of the same engine type:
+   - For **ClickHouse Logs**: see `bt8700OpenrtbRequestsFull/` — uses `config.get("clickHouseLogs")`, creates main table + Kafka queue table + materialized view, data files in `data/` subfolder
+   - For **Cassandra**: see `bt4056OpenRtb/` — uses `config.get("cassandraCluster")`, data files in `data/cassandra/` subfolder
+4. Create files:
+   - `index.js` — exports `{ clickHouseDB }` or `{ cassandraDB }`
+   - `<engine>DB.js` — `up()` and `down()` functions with logging, using connection from `../../helpers/`
+   - `data/` folder with DDL/CQL string exports
+5. Update registry files:
+   - `$MIGRATIONS_REPO/constants/availableMigrations.js` — add migration name to `AVAILABLE_MIGRATIONS` array
+   - `$MIGRATIONS_REPO/migrations/index.js` — add `require` + `module.exports` entry
+
+**Important:** The migration files are Node.js (not Go). Follow the exact style of existing migrations.
+
 ## Rules
 - Follow the plan strictly — no extra features, no refactoring outside scope
 - Follow existing project patterns and conventions

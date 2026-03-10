@@ -617,6 +617,11 @@ run_staircase_pipeline() {
                 fi
             fi
 
+            # Commit migrations repo changes if any
+            if [[ -n "${MIGRATIONS_REPO:-}" && -d "$MIGRATIONS_REPO" ]]; then
+                run_migrations_git_commit "$subtask" "$current_branch"
+            fi
+
             staircase_results+=("${subtask}:APPROVED:${subtask_status}:${current_branch}")
         else
             log_err "Subtask ${subtask}: FAILED (${subtask_status})"

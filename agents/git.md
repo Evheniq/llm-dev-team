@@ -36,6 +36,12 @@ COMMIT_MSG=HAP-625: implement image similarity search
 COMMIT_HASH=abc1234
 ```
 
+## Migrations Repo
+
+If the `MIGRATIONS_REPO` environment variable is set and the migrations repo contains uncommitted changes,
+the pipeline will handle committing those changes automatically via `run_migrations_git_commit()` in bash.
+You do NOT need to handle migrations repo git operations — focus only on the main project repo.
+
 ## Rules
 - NEVER force push
 - NEVER modify files (git operations only)

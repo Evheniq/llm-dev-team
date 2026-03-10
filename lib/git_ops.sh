@@ -124,3 +124,56 @@ run_git_prepare_staircase() {
     fi
     return 1
 }
+
+# Commit and push migrations repo changes (if any)
+# $1 = subtask name (e.g. BT-9260-clickhouse-openrtb-logging)
+# $2 = matching branch name from AdWorker
+run_migrations_git_commit() {
+    local subtask="$1"
+    local adworker_branch="${2:-}"
+
+    if [[ -z "${MIGRATIONS_REPO:-}" || ! -d "$MIGRATIONS_REPO" ]]; then
+        return 0
+    fi
+
+    # Check if there are uncommitted changes in migrations repo
+    local has_changes
+    has_changes=$(cd "$MIGRATIONS_REPO" && git status --porcelain 2>/dev/null)
+    if [[ -z "$has_changes" ]]; then
+        log_debug "No migrations repo changes for ${subtask}"
+        return 0
+    fi
+
+    log_info "${ICON_GIT:-🔀} Committing migrations repo changes for ${subtask}..."
+
+    local branch_name="${BRANCH_PREFIX}$(echo "$subtask" | tr '[:upper:]' '[:lower:]')"
+
+    (
+        cd "$MIGRATIONS_REPO" || exit 1
+
+        # Create/switch to branch
+        if git rev-parse --verify "$branch_name" &>/dev/null; then
+            git checkout "$branch_name"
+        else
+            git checkout -b "$branch_name"
+        fi
+
+        # Stage migration files
+        git add migrations/*/index.js migrations/*/clickHouseDB.js migrations/*/cassandraDB.js \
+              migrations/*/data/ constants/availableMigrations.js migrations/index.js 2>/dev/null || true
+
+        # Commit
+        local task_id
+        task_id=$(echo "$subtask" | grep -oE 'BT-[0-9]+' | head -1)
+        git commit -m "${task_id}: add DB migration for ${subtask}"
+
+        # Push
+        git push -u origin "$branch_name"
+    )
+
+    if [[ $? -eq 0 ]]; then
+        log_ok "Migrations repo changes committed and pushed to ${branch_name}"
+    else
+        log_warn "Migrations repo git operations failed for ${subtask}"
+    fi
+}

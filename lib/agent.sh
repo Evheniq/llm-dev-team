@@ -117,6 +117,7 @@ load_agent_prompt() {
     template="${template//\{\{E2E_BASE_URL\}\}/${E2E_BASE_URL}}"
     template="${template//\{\{PROJECT_NAME\}\}/${PROJECT_NAME:-}}"
     template="${template//\{\{REPORT_LANGUAGE\}\}/${REPORT_LANGUAGE}}"
+    template="${template//\{\{MIGRATIONS_REPO\}\}/${MIGRATIONS_REPO:-}}"
 
     echo "$template"
 }
